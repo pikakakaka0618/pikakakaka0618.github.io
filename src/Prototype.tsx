@@ -69,7 +69,7 @@ function recommendationReason(track: string, artist: string, moodLabel: string) 
 
 export default function Prototype() {
   const keyboard = useKeyboard();
-  const [signedIn, setSignedIn] = useState(false);
+  const [signedIn, setSignedIn] = useState(() => new URLSearchParams(window.location.search).has("preview"));
   const [sent, setSent] = useState(false);
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -120,7 +120,7 @@ export default function Prototype() {
     stopAudio(); setMusicLoading(true);
     try {
       const term = offset ? musicSearchTerms[index] : moods[index].query;
-      const response = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(term)}&entity=song&limit=25&country=cn`);
+      const response = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(term)}&entity=song&limit=25&country=us`);
       if (!response.ok) throw new Error(`Music search failed: ${response.status}`);
       const data = await response.json();
       const playableResults = (data.results || []).filter((track: RealTrack) =>
@@ -158,6 +158,10 @@ export default function Prototype() {
     }
   }, [mood, stopAudio, recordMoment]);
   searchMusicRef.current = searchMusic;
+
+  useEffect(() => {
+    if (signedIn && !realTrackRef.current) void searchMusic(0, 0, false);
+  }, [signedIn]);
 
   useEffect(() => () => {
     searchRequestRef.current += 1;
