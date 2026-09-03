@@ -28,6 +28,31 @@ const musicSearchTerms = [
 type RealTrack = { trackName: string; artistName: string; previewUrl?: string; artworkUrl100?: string; trackViewUrl?: string };
 type MoodMoment = { id: string; createdAt: string; moodIndex: number; track: string; artist: string; note?: string };
 
+async function firstLoadableTrack(tracks: RealTrack[]) {
+  for (const track of tracks.slice(0, 8)) {
+    if (!track.previewUrl) continue;
+    const previewUrl = track.previewUrl;
+    const playable = await new Promise<boolean>((resolve) => {
+      const audio = new Audio();
+      const timer = window.setTimeout(() => finish(false), 5000);
+      const finish = (result: boolean) => {
+        window.clearTimeout(timer);
+        audio.oncanplay = null;
+        audio.onerror = null;
+        audio.src = "";
+        resolve(result);
+      };
+      audio.preload = "metadata";
+      audio.oncanplay = () => finish(true);
+      audio.onerror = () => finish(false);
+      audio.src = previewUrl;
+      audio.load();
+    });
+    if (playable) return track;
+  }
+  return null;
+}
+
 const STORAGE_KEY = "mood-fm-moments-v1";
 const dayKey = (date: Date) => `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 const seedMoments = (): MoodMoment[] => [6, 5, 3, 1].map((daysAgo, i) => {
@@ -120,13 +145,19 @@ export default function Prototype() {
     stopAudio(); setMusicLoading(true);
     try {
       const term = offset ? musicSearchTerms[index] : moods[index].query;
-      const response = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(term)}&entity=song&limit=25&country=us`);
-      if (!response.ok) throw new Error(`Music search failed: ${response.status}`);
-      const data = await response.json();
-      const playableResults = (data.results || []).filter((track: RealTrack) =>
-        track.previewUrl && track.previewUrl !== realTrackRef.current?.previewUrl
-      ) as RealTrack[];
-      const result = playableResults[offset ? (offset - 1) % Math.max(1, playableResults.length) : 0];
+      const queries = [term, musicSearchTerms[index], "indie pop acoustic"];
+      let result: RealTrack | null = null;
+      for (const query of queries) {
+        const response = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=song&limit=25&country=us`);
+        if (!response.ok) continue;
+        const data = await response.json();
+        const playableResults = (data.results || []).filter((track: RealTrack) =>
+          track.previewUrl && track.previewUrl !== realTrackRef.current?.previewUrl
+        ) as RealTrack[];
+        const start = offset ? (offset - 1) % Math.max(1, playableResults.length) : 0;
+        result = await firstLoadableTrack([...playableResults.slice(start), ...playableResults.slice(0, start)]);
+        if (result) break;
+      }
       if (requestId === searchRequestRef.current) {
         const nextTrack = result || null;
         const currentTrack = realTrackRef.current;
@@ -190,7 +221,12 @@ export default function Prototype() {
     if (playing) {
       stopAudio();
     } else {
-      void audioRef.current.play().then(() => { setPlaying(true); recordMoment(mood, realTrack); }).catch(() => setPlaying(false));
+      void audioRef.current.play().then(() => { setPlaying(true); recordMoment(mood, realTrack); }).catch(() => {
+        setPlaying(false);
+        const next = trackOffset + 1;
+        setTrackOffset(next);
+        void searchMusic(mood, next, false);
+      });
     }
   };
 
