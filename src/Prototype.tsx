@@ -26,6 +26,16 @@ const musicSearchTerms = [
 ];
 
 type RealTrack = { trackName: string; artistName: string; previewUrl?: string; artworkUrl100?: string; trackViewUrl?: string };
+type MoodMoment = { id: string; createdAt: string; moodIndex: number; track: string; artist: string; note?: string };
+
+const STORAGE_KEY = "mood-fm-moments-v1";
+const dayKey = (date: Date) => `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+const seedMoments = (): MoodMoment[] => [6, 5, 3, 1].map((daysAgo, i) => {
+  const date = new Date();
+  date.setDate(date.getDate() - daysAgo);
+  const moodIndex = [3, 9, 6, 1][i];
+  return { id: `seed-${i}`, createdAt: date.toISOString(), moodIndex, track: moods[moodIndex].track, artist: moods[moodIndex].artist };
+});
 
 const reasonOpeners = [
   "旋律的留白很克制，能让注意力慢慢聚拢",
@@ -79,10 +89,28 @@ export default function Prototype() {
   const searchRequestRef = useRef(0);
   const searchMusicRef = useRef<(index?: number, offset?: number, autoplay?: boolean) => Promise<void>>(async () => {});
   const [tab, setTab] = useState<"today" | "week" | "me">("today");
+  const [moments, setMoments] = useState<MoodMoment[]>(() => {
+    try { const savedMoments = localStorage.getItem(STORAGE_KEY); return savedMoments ? JSON.parse(savedMoments) : seedMoments(); }
+    catch { return seedMoments(); }
+  });
   const active = moods[mood];
   const bars = useMemo(() => Array.from({ length: 22 }, (_, i) => 8 + ((i * 17 + mood * 9) % 31)), [mood]);
   const displayTrack = realTrack ? { track: realTrack.trackName, artist: realTrack.artistName } : active;
   const aiReason = recommendationReason(displayTrack.track, displayTrack.artist, moods[mood].label);
+  useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(moments)); }, [moments]);
+
+  const recordMoment = useCallback((moodIndex: number, track: RealTrack | null, momentNote = "") => {
+    const name = track?.trackName || moods[moodIndex].track;
+    const artist = track?.artistName || moods[moodIndex].artist;
+    setMoments(current => {
+      const latest = current[0];
+      const now = Date.now();
+      if (latest && latest.moodIndex === moodIndex && now - new Date(latest.createdAt).getTime() < 60_000) {
+        return [{ ...latest, track: name, artist, ...(momentNote ? { note: momentNote } : {}) }, ...current.slice(1)];
+      }
+      return [{ id: `${now}-${Math.random().toString(36).slice(2, 7)}`, createdAt: new Date(now).toISOString(), moodIndex, track: name, artist, note: momentNote || undefined }, ...current];
+    });
+  }, []);
   const stopAudio = useCallback(() => {
     if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; }
     setPlaying(false);
@@ -120,6 +148,7 @@ export default function Prototype() {
             });
           };
           void audio.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
+          recordMoment(index, nextTrack);
         }
       }
     } catch {
@@ -127,7 +156,7 @@ export default function Prototype() {
     } finally {
       if (requestId === searchRequestRef.current) setMusicLoading(false);
     }
-  }, [mood, stopAudio]);
+  }, [mood, stopAudio, recordMoment]);
   searchMusicRef.current = searchMusic;
 
   useEffect(() => () => {
@@ -141,7 +170,7 @@ export default function Prototype() {
   }, []);
 
   const togglePreview = () => {
-    if (!realTrack?.previewUrl) { searchMusic(); return; }
+    if (!realTrack?.previewUrl) { recordMoment(mood, realTrack); searchMusic(mood, trackOffset, true); return; }
     if (!audioRef.current || audioRef.current.src !== realTrack.previewUrl) {
       if (audioRef.current) { audioRef.current.onended = null; audioRef.current.pause(); }
       audioRef.current = new Audio(realTrack.previewUrl);
@@ -157,7 +186,7 @@ export default function Prototype() {
     if (playing) {
       stopAudio();
     } else {
-      void audioRef.current.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
+      void audioRef.current.play().then(() => { setPlaying(true); recordMoment(mood, realTrack); }).catch(() => setPlaying(false));
     }
   };
 
@@ -170,6 +199,7 @@ export default function Prototype() {
     setCanGoBack(false);
     setMood(index);
     setTrackOffset(0);
+    recordMoment(index, null);
     void searchMusic(index, 0, true);
   };
 
@@ -189,6 +219,23 @@ export default function Prototype() {
     setTab(nextTab);
   };
 
+  const now = new Date();
+  const weekStart = new Date(now); weekStart.setHours(0,0,0,0); weekStart.setDate(weekStart.getDate() - 6);
+  const weekMoments = moments.filter(item => new Date(item.createdAt) >= weekStart);
+  const weekDays = Array.from({ length: 7 }, (_, i) => {
+    const date = new Date(weekStart); date.setDate(date.getDate() + i);
+    const items = weekMoments.filter(item => dayKey(new Date(item.createdAt)) === dayKey(date));
+    const counts = items.reduce<Record<number, number>>((acc, item) => ({ ...acc, [item.moodIndex]: (acc[item.moodIndex] || 0) + 1 }), {});
+    const dominant = Number(Object.entries(counts).sort((a,b) => b[1]-a[1])[0]?.[0] ?? -1);
+    return { date, items, dominant };
+  });
+  const monthMoments = moments.filter(item => { const d = new Date(item.createdAt); return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear(); });
+  const moodCounts = monthMoments.reduce<Record<number, number>>((acc, item) => ({ ...acc, [item.moodIndex]: (acc[item.moodIndex] || 0) + 1 }), {});
+  const dominantMood = Number(Object.entries(moodCounts).sort((a,b) => b[1]-a[1])[0]?.[0] ?? mood);
+  const recordedDays = new Set(moments.map(item => dayKey(new Date(item.createdAt)))).size;
+  const formatMomentDate = (iso: string) => { const d = new Date(iso); return dayKey(d) === dayKey(now) ? "今天" : `${d.getMonth()+1} 月 ${d.getDate()} 日`; };
+  const headerDate = `${["SUN","MON","TUE","WED","THU","FRI","SAT"][now.getDay()]} · ${now.getDate()} ${["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"][now.getMonth()]}`;
+
   if (!signedIn) {
     return <MobileScroll className="app-screen"><main className="authScreen">
       <div className="authOrb"><span>♫</span></div>
@@ -207,7 +254,7 @@ export default function Prototype() {
 
   return <div className="appShell" style={{"--mood-color": active.color} as React.CSSProperties}>
     <MobileScroll key={tab} className="app-screen"><main className="homeScreen">
-      <header><div><p className="mini">THU · 27 AUG</p><b>你好，诗涵</b></div><button className="avatar">邱</button></header>
+      <header><div><p className="mini">{headerDate}</p><b>你好，诗涵</b></div><button className="avatar">邱</button></header>
       {tab === "today" && <>
         <section className="heroVisual"><img src="/generated/mood-fm-ip-group-v2.jpg" alt="四种心情中的诗涵"/><div className="livePill"><i/> YOUR MOOD IS LIVE</div><div className="wave">{bars.map((h,i)=><span key={i} style={{height:h}}/>)}</div></section>
         <section className="moodPanel"><p className="eyebrow">01 · CHECK IN</p><h1>今天，哪一个你<br/>正在播放？</h1><div className="moodRail expanded">{moods.map((item,i)=><button key={item.label} className={i===mood?"active":""} onClick={()=>chooseMood(i)}><span>{item.emoji}</span>{item.label}</button>)}</div></section>
@@ -216,11 +263,11 @@ export default function Prototype() {
         <div className="aiReason"><span>AI</span><p><b>为什么是这首？</b>{aiReason}</p></div>
         <div className="playerActions"><button disabled={!canGoBack} onClick={playPreviousTrack}>← 上一首</button><button onClick={()=>{const next=trackOffset+1;setTrackOffset(next);void searchMusic(mood,next,true)}}>换一首 ↻</button><button onClick={()=>realTrack?.trackViewUrl&&window.open(realTrack.trackViewUrl,"_blank")}>Apple Music ↗</button></div>
         {!checkInOpen && <button className="record" onClick={()=>setCheckInOpen(true)}>+ 留下一句此刻的旁白</button>}
-        {checkInOpen && <section className="checkInCard"><p className="eyebrow">02 · ADD CONTEXT</p><h3>这一刻，还发生了什么？</h3><KeyboardTextarea value={note} onChange={e=>setNote(e.target.value)} placeholder="比如：下班路上突然吹来一点凉风……"/><div className="sceneChips"><button>通勤</button><button>独处</button><button>工作后</button><button>散步</button></div><button className="saveMoment" onClick={()=>{keyboard.hide();setSaved(true);setCheckInOpen(false)}}>{saved?"已保存到情绪档案 ✓":"保存这一刻"}</button></section>}
+        {checkInOpen && <section className="checkInCard"><p className="eyebrow">02 · ADD CONTEXT</p><h3>这一刻，还发生了什么？</h3><KeyboardTextarea value={note} onChange={e=>setNote(e.target.value)} placeholder="比如：下班路上突然吹来一点凉风……"/><div className="sceneChips"><button>通勤</button><button>独处</button><button>工作后</button><button>散步</button></div><button className="saveMoment" onClick={()=>{keyboard.hide();recordMoment(mood, realTrack, note);setSaved(true);setCheckInOpen(false)}}>{saved?"已保存到情绪档案 ✓":"保存这一刻"}</button></section>}
         {saved && !checkInOpen && <div className="savedToast"><span>✓</span><div><b>已经收进今天的情绪档案</b><small>轻盈 · {active.track}{note?` · ${note}`:""}</small></div><button onClick={()=>setTab("me")}>查看</button></div>}
       </>}
-      {tab === "week" && <section className="weekView"><p className="eyebrow">YOUR WEEK IN SOUND</p><h1>这周的你，<br/><i>听起来像什么？</i></h1><div className="weekOrb"><span>7</span><small>MOOD MOMENTS</small></div><div className="dayRows">{["MON","TUE","WED","THU"].map((d,i)=><div key={d}><b>{d}</b><span style={{width:`${42+i*13}%`}}/><em>{moods[i].label}</em></div>)}</div></section>}
-      {tab === "me" && <section className="archiveView"><p className="eyebrow">MY MOOD ARCHIVE</p><h1>你的情绪，<br/><i>一直都在这里。</i></h1><div className="archiveStats"><div><b>18</b><small>记录天数</small></div><div><b>42</b><small>陪伴歌曲</small></div><div><b>轻盈</b><small>本月主调</small></div></div><div className="archiveTabs"><button className={archiveMode==="calendar"?"active":""} onClick={()=>setArchiveMode("calendar")}>日历</button><button className={archiveMode==="timeline"?"active":""} onClick={()=>setArchiveMode("timeline")}>时间线</button><button className={archiveMode==="trend"?"active":""} onClick={()=>setArchiveMode("trend")}>趋势</button></div>{archiveMode==="calendar"&&<div className="calendar"><header><b>2026 · AUG</b><span>‹　›</span></header><div className="weekLabels">{["一","二","三","四","五","六","日"].map(x=><i key={x}>{x}</i>)}</div><div className="days">{Array.from({length:28},(_,i)=><button key={i} className={[2,5,8,12,16,20,23,26].includes(i)?`logged m${i%4}`:""}>{i+1}{[2,5,8,12,16,20,23,26].includes(i)&&<em/>}</button>)}</div></div>}{archiveMode==="timeline"&&<div className="fullTimeline">{["今天 · 轻盈","8 月 26 日 · 安静","8 月 23 日 · 心动","8 月 20 日 · 疲惫","8 月 17 日 · 专注"].map((x,i)=><article key={x}><span>{moods[[0,3,9,6,1][i]].emoji}</span><div><b>{x}</b><small>{[displayTrack.track,"Mystery of Love","Glue Song","Moon Song","Bloom"][i]} · 点击回听</small></div></article>)}</div>}{archiveMode==="trend"&&<div className="trendCard"><p className="eyebrow">AUGUST FREQUENCY</p><h3>这个月，你正在慢慢变轻。</h3><div className="trendBars">{[46,62,38,72,55,82,68].map((v,i)=><i key={i} style={{height:v}}><em>{["一","二","三","四","五","六","日"][i]}</em></i>)}</div><p>轻盈与松弛比上周增加 <b>24%</b>，疲惫多出现在周三晚间。</p></div>}<div className="timeline"><p className="eyebrow">RECENT MOMENTS</p><article><span className="moodDot lavender">☾</span><div><b>安静地把一天放下</b><small>8 月 26 日 · Mystery of Love</small></div><button>›</button></article></div><div className="exportNote"><b>声音日记导出</b><span>适合做月度回顾、个人留存，或主动分享给咨询师；日常查看无需导出。</span><button>生成本月回顾 · PDF ↗</button></div></section>}
+      {tab === "week" && <section className="weekView"><p className="eyebrow">YOUR WEEK IN SOUND</p><h1>这周的你，<br/><i>听起来像什么？</i></h1><div className="weekOrb"><span>{weekMoments.length}</span><small>MOOD MOMENTS</small></div><div className="dayRows">{weekDays.map(({date,items,dominant})=><div key={dayKey(date)}><b>{["日","一","二","三","四","五","六"][date.getDay()]}</b><span style={{width:`${items.length ? Math.min(100, 28 + items.length * 18) : 4}%`}}/><em>{dominant >= 0 ? `${moods[dominant].label} · ${items.length}` : "未记录"}</em></div>)}</div></section>}
+      {tab === "me" && <section className="archiveView"><p className="eyebrow">MY MOOD ARCHIVE</p><h1>你的情绪，<br/><i>一直都在这里。</i></h1><div className="archiveStats"><div><b>{recordedDays}</b><small>记录天数</small></div><div><b>{moments.length}</b><small>陪伴歌曲</small></div><div><b>{moods[dominantMood].label}</b><small>本月主调</small></div></div><div className="archiveTabs"><button className={archiveMode==="calendar"?"active":""} onClick={()=>setArchiveMode("calendar")}>日历</button><button className={archiveMode==="timeline"?"active":""} onClick={()=>setArchiveMode("timeline")}>时间线</button><button className={archiveMode==="trend"?"active":""} onClick={()=>setArchiveMode("trend")}>趋势</button></div>{archiveMode==="calendar"&&<div className="calendar"><header><b>{now.getFullYear()} · {String(now.getMonth()+1).padStart(2,"0")}</b><span>本月</span></header><div className="weekLabels">{["一","二","三","四","五","六","日"].map(x=><i key={x}>{x}</i>)}</div><div className="days">{Array.from({length:new Date(now.getFullYear(),now.getMonth()+1,0).getDate()},(_,i)=>{const items=monthMoments.filter(x=>new Date(x.createdAt).getDate()===i+1);return <button key={i} className={items.length?`logged m${items[0].moodIndex%4}`:""}>{i+1}{items.length>0&&<em/>}</button>})}</div></div>}{archiveMode==="timeline"&&<div className="fullTimeline">{moments.map(item=><article key={item.id}><span>{moods[item.moodIndex].emoji}</span><div><b>{formatMomentDate(item.createdAt)} · {moods[item.moodIndex].label}</b><small>{item.track} · {item.artist}{item.note?` · ${item.note}`:""}</small></div></article>)}</div>}{archiveMode==="trend"&&<div className="trendCard"><p className="eyebrow">本月情绪频率</p><h3>这个月，「{moods[dominantMood].label}」出现得最多。</h3><div className="trendBars">{weekDays.map(({date,items})=><i key={dayKey(date)} style={{height:Math.max(10,Math.min(82,items.length*24))}}><em>{["日","一","二","三","四","五","六"][date.getDay()]}</em></i>)}</div><p>近 7 天共记录 <b>{weekMoments.length}</b> 次情绪，数据会随着每次播放持续更新。</p></div>}<div className="timeline"><p className="eyebrow">RECENT MOMENTS</p>{moments.slice(0,3).map(item=><article key={item.id}><span className="moodDot lavender">{moods[item.moodIndex].emoji}</span><div><b>{item.note || `${moods[item.moodIndex].label}地听一会儿`}</b><small>{formatMomentDate(item.createdAt)} · {item.track}</small></div><button>›</button></article>)}</div><div className="exportNote"><b>声音日记导出</b><span>适合做月度回顾、个人留存，或主动分享给咨询师；日常查看无需导出。</span><button>生成本月回顾 · PDF ↗</button></div></section>}
       <div className="bottomSpace"/>
     </main></MobileScroll>
     <nav className="tabBar"><button className={tab==="today"?"active":""} onClick={()=>changeTab("today")}><span>◉</span>此刻</button><button className={tab==="week"?"active":""} onClick={()=>changeTab("week")}><span>⌁</span>本周</button><button className={tab==="me"?"active":""} onClick={()=>changeTab("me")}><span>○</span>我的</button></nav>
