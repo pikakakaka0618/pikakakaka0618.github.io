@@ -37,13 +37,13 @@ async function firstLoadableTrack(tracks: RealTrack[]) {
       const timer = window.setTimeout(() => finish(false), 5000);
       const finish = (result: boolean) => {
         window.clearTimeout(timer);
-        audio.oncanplay = null;
+      audio.onloadedmetadata = null;
         audio.onerror = null;
         audio.src = "";
         resolve(result);
       };
       audio.preload = "metadata";
-      audio.oncanplay = () => finish(true);
+      audio.onloadedmetadata = () => finish(true);
       audio.onerror = () => finish(false);
       audio.src = previewUrl;
       audio.load();
