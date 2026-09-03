@@ -69,7 +69,7 @@ function recommendationReason(track: string, artist: string, moodLabel: string) 
 
 export default function Prototype() {
   const keyboard = useKeyboard();
-  const [signedIn, setSignedIn] = useState(() => new URLSearchParams(window.location.search).has("preview"));
+  const [signedIn, setSignedIn] = useState(false);
   const [sent, setSent] = useState(false);
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
