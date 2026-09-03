@@ -110,6 +110,7 @@ export default function Prototype() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const realTrackRef = useRef<RealTrack | null>(null);
   const previousTracksRef = useRef<RealTrack[]>([]);
+  const trackPoolsRef = useRef<Record<number, RealTrack[]>>({});
   const [canGoBack, setCanGoBack] = useState(false);
   const searchRequestRef = useRef(0);
   const searchMusicRef = useRef<(index?: number, offset?: number, autoplay?: boolean) => Promise<void>>(async () => {});
@@ -144,20 +145,25 @@ export default function Prototype() {
     const requestId = ++searchRequestRef.current;
     stopAudio(); setMusicLoading(true);
     try {
-      const term = offset ? musicSearchTerms[index] : moods[index].query;
-      const queries = [term, musicSearchTerms[index], "indie pop acoustic"];
-      let result: RealTrack | null = null;
-      for (const query of queries) {
-        const response = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=song&limit=25&country=us`);
-        if (!response.ok) continue;
-        const data = await response.json();
-        const playableResults = (data.results || []).filter((track: RealTrack) =>
-          track.previewUrl && track.previewUrl !== realTrackRef.current?.previewUrl
-        ) as RealTrack[];
-        const start = offset ? (offset - 1) % Math.max(1, playableResults.length) : 0;
-        result = await firstLoadableTrack([...playableResults.slice(start), ...playableResults.slice(0, start)]);
-        if (result) break;
+      let pool = trackPoolsRef.current[index] || [];
+      if (!pool.length) {
+        const queries = [moods[index].query, musicSearchTerms[index], "indie pop acoustic"];
+        const responses = await Promise.all(queries.map(query =>
+          fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=song&limit=25&country=us`)
+            .then(response => response.ok ? response.json() : { results: [] })
+            .catch(() => ({ results: [] }))
+        ));
+        const seen = new Set<string>();
+        pool = responses.flatMap(data => data.results || []).filter((track: RealTrack) => {
+          if (!track.previewUrl || seen.has(track.previewUrl)) return false;
+          seen.add(track.previewUrl);
+          return true;
+        }) as RealTrack[];
+        trackPoolsRef.current[index] = pool;
       }
+      const start = offset % Math.max(1, pool.length);
+      const candidates = [...pool.slice(start), ...pool.slice(0, start)].filter(track => track.previewUrl !== realTrackRef.current?.previewUrl);
+      const result = await firstLoadableTrack(candidates);
       if (requestId === searchRequestRef.current) {
         const nextTrack = result || null;
         const currentTrack = realTrackRef.current;
@@ -301,7 +307,7 @@ export default function Prototype() {
         <section className="player"><div className={`miniVinyl ${playing?"spinning":""}`}>{realTrack?.artworkUrl100?<img src={realTrack.artworkUrl100} alt="专辑封面"/>:<span/>}</div><div className="track"><small>{musicLoading?"正在寻找真实歌曲…":`为「${moods[mood].label}」推荐 · 点击播放 30 秒试听`}</small><b>{displayTrack.track}</b><span>{displayTrack.artist}</span></div><button className="play" onClick={togglePreview} disabled={musicLoading} aria-label={playing?"暂停试听":"播放试听"}>{playing?"Ⅱ":"▶"}</button></section>
         <div className="previewNotice"><b>30s</b><span>公开试听结束后会自动换一首；完整版可前往音乐平台播放。</span></div>
         <div className="aiReason"><span>AI</span><p><b>为什么是这首？</b>{aiReason}</p></div>
-        <div className="playerActions"><button disabled={!canGoBack} onClick={playPreviousTrack}>← 上一首</button><button onClick={()=>{const next=trackOffset+1;setTrackOffset(next);void searchMusic(mood,next,false)}}>换一首 ↻</button><button onClick={()=>realTrack?.trackViewUrl&&window.open(realTrack.trackViewUrl,"_blank")}>Apple Music ↗</button></div>
+        <div className="playerActions"><button disabled={!canGoBack || musicLoading} onClick={playPreviousTrack}>← 上一首</button><button disabled={musicLoading} onClick={()=>{const next=trackOffset+1;setTrackOffset(next);void searchMusic(mood,next,false)}}>{musicLoading?"正在换歌…":"换一首 ↻"}</button><button onClick={()=>realTrack?.trackViewUrl&&window.open(realTrack.trackViewUrl,"_blank")}>Apple Music ↗</button></div>
         {!checkInOpen && <button className="record" onClick={()=>setCheckInOpen(true)}>+ 留下一句此刻的旁白</button>}
         {checkInOpen && <section className="checkInCard"><p className="eyebrow">02 · ADD CONTEXT</p><h3>这一刻，还发生了什么？</h3><KeyboardTextarea value={note} onChange={e=>setNote(e.target.value)} placeholder="比如：下班路上突然吹来一点凉风……"/><div className="sceneChips"><button>通勤</button><button>独处</button><button>工作后</button><button>散步</button></div><button className="saveMoment" onClick={()=>{keyboard.hide();recordMoment(mood, realTrack, note);setSaved(true);setCheckInOpen(false)}}>{saved?"已保存到情绪档案 ✓":"保存这一刻"}</button></section>}
         {saved && !checkInOpen && <div className="savedToast"><span>✓</span><div><b>已经收进今天的情绪档案</b><small>轻盈 · {active.track}{note?` · ${note}`:""}</small></div><button onClick={()=>setTab("me")}>查看</button></div>}
